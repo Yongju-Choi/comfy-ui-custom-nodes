@@ -1,15 +1,22 @@
 import json
 import os
+import re
+import logging
 
-from aiohttp import web
-from server import PromptServer
+logger = logging.getLogger(__name__)
 
 PRESETS_PATH = os.path.join(os.path.dirname(__file__), "presets.json")
 
 
 def load_presets():
-    with open(PRESETS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    if not os.path.isfile(PRESETS_PATH):
+        return {}
+    try:
+        with open(PRESETS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"[PromptBuilder] Failed to load presets.json: {e}")
+        return {}
 
 
 def save_presets(data):
@@ -24,60 +31,67 @@ def get_preset_list(section):
 
 # ── API routes ──────────────────────────────────────────────────────
 
-@PromptServer.instance.routes.get("/promptbuilder/presets")
-async def get_presets(request):
-    return web.json_response(load_presets())
+try:
+    from aiohttp import web
+    from server import PromptServer
 
+    @PromptServer.instance.routes.get("/promptbuilder/presets")
+    async def get_presets(request):
+        return web.json_response(load_presets())
 
-@PromptServer.instance.routes.post("/promptbuilder/presets/{section}/add")
-async def add_preset(request):
-    section = request.match_info["section"]
-    body = await request.json()
-    text = body.get("text", "").strip()
-    if not text:
-        return web.json_response({"error": "text is required"}, status=400)
+    @PromptServer.instance.routes.post("/promptbuilder/presets/{section}/add")
+    async def add_preset(request):
+        section = request.match_info["section"]
+        body = await request.json()
+        text = body.get("text", "").strip()
+        if not text:
+            return web.json_response({"error": "text is required"}, status=400)
 
-    presets = load_presets()
-    if section not in presets:
-        presets[section] = []
-    if text not in presets[section]:
-        presets[section].append(text)
-        save_presets(presets)
+        presets = load_presets()
+        if section not in presets:
+            presets[section] = []
+        if text not in presets[section]:
+            presets[section].append(text)
+            save_presets(presets)
 
-    return web.json_response({"ok": True, "presets": presets[section]})
+        return web.json_response({"ok": True, "presets": presets[section]})
 
+    @PromptServer.instance.routes.post("/promptbuilder/presets/{section}/delete")
+    async def delete_preset(request):
+        section = request.match_info["section"]
+        body = await request.json()
+        text = body.get("text", "").strip()
 
-@PromptServer.instance.routes.post("/promptbuilder/presets/{section}/delete")
-async def delete_preset(request):
-    section = request.match_info["section"]
-    body = await request.json()
-    text = body.get("text", "").strip()
+        presets = load_presets()
+        if section in presets and text in presets[section]:
+            presets[section].remove(text)
+            save_presets(presets)
 
-    presets = load_presets()
-    if section in presets and text in presets[section]:
-        presets[section].remove(text)
-        save_presets(presets)
+        return web.json_response({"ok": True, "presets": presets.get(section, [])})
 
-    return web.json_response({"ok": True, "presets": presets.get(section, [])})
+    @PromptServer.instance.routes.post("/promptbuilder/presets/{section}/reorder")
+    async def reorder_presets(request):
+        section = request.match_info["section"]
+        body = await request.json()
+        items = body.get("items", [])
 
+        presets = load_presets()
+        if section in presets:
+            presets[section] = items
+            save_presets(presets)
 
-@PromptServer.instance.routes.post("/promptbuilder/presets/{section}/reorder")
-async def reorder_presets(request):
-    section = request.match_info["section"]
-    body = await request.json()
-    items = body.get("items", [])
+        return web.json_response({"ok": True, "presets": presets.get(section, [])})
 
-    presets = load_presets()
-    if section in presets:
-        presets[section] = items
-        save_presets(presets)
+    logger.info("[PromptBuilder] API routes registered.")
 
-    return web.json_response({"ok": True, "presets": presets.get(section, [])})
+except Exception as e:
+    logger.warning(f"[PromptBuilder] Could not register API routes: {e}")
 
 
 # ── Grammar correction ──────────────────────────────────────────────
 
 _grammar_tool = None
+
 
 def get_grammar_tool():
     global _grammar_tool
@@ -87,19 +101,28 @@ def get_grammar_tool():
     return _grammar_tool
 
 
-@PromptServer.instance.routes.post("/promptbuilder/grammar")
-async def grammar_check(request):
-    body = await request.json()
-    text = body.get("text", "")
-    if not text.strip():
-        return web.json_response({"corrected": text})
+try:
+    from aiohttp import web
+    from server import PromptServer
 
-    try:
-        tool = get_grammar_tool()
-        corrected = tool.correct(text)
-        return web.json_response({"corrected": corrected})
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+    @PromptServer.instance.routes.post("/promptbuilder/grammar")
+    async def grammar_check(request):
+        body = await request.json()
+        text = body.get("text", "")
+        if not text.strip():
+            return web.json_response({"corrected": text})
+
+        try:
+            tool = get_grammar_tool()
+            corrected = tool.correct(text)
+            return web.json_response({"corrected": corrected})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    logger.info("[PromptBuilder] Grammar route registered.")
+
+except Exception as e:
+    logger.warning(f"[PromptBuilder] Could not register grammar route: {e}")
 
 
 # ── Node ────────────────────────────────────────────────────────────
@@ -128,15 +151,13 @@ class PromptBuilder:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("prompt",)
     FUNCTION = "build"
-    CATEGORY = "prompt"
+    CATEGORY = "utils"
 
     def build(self, pov, pov_pick, character, character_pick, action, action_pick,
               clothing, clothing_pick, viewer_action,
               viewer_action_pick, background, background_pick, separator):
-        import re
         def clean(s):
             s = s.strip()
-            # Replace double+ commas with single comma
             s = re.sub(r',(\s*,)+', ',', s)
             return s.strip()
 
@@ -163,3 +184,5 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptBuilder": "Prompt Builder",
 }
+
+logger.info("[PromptBuilder] Node class registered successfully.")
