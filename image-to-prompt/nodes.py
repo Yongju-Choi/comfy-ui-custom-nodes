@@ -132,13 +132,25 @@ class ImageToPrompt:
                 "first_person_pov": ("BOOLEAN", {"default": False}),
                 "nsfw": ("BOOLEAN", {"default": False}),
                 "realistic": ("BOOLEAN", {"default": False}),
+                "korean": ("BOOLEAN", {"default": False}),
+                "always_run": ("BOOLEAN", {"default": False}),
+                "custom_override": ("BOOLEAN", {"default": True}),
             },
             "optional": {
+                "background_image": ("IMAGE",),
                 "custom_instruction": ("STRING", {
                     "default": "",
                     "multiline": True,
-                    "placeholder": "Custom instruction (overrides style)"
+                    "placeholder": "Custom instruction"
                 }),
+                "edited_prompt": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "placeholder": "Generated prompt appears here. Edit to override output."
+                }),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
             },
         }
 
@@ -146,6 +158,19 @@ class ImageToPrompt:
     RETURN_NAMES = ("prompt",)
     FUNCTION = "generate"
     CATEGORY = "prompt"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def IS_CHANGED(cls, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
+        if always_run:
+            return float("NaN")
+        import hashlib
+        img_bytes = image.cpu().numpy().tobytes()
+        h = hashlib.md5(img_bytes).hexdigest()
+        if background_image is not None:
+            bg_bytes = background_image.cpu().numpy().tobytes()
+            h += "_bg_" + hashlib.md5(bg_bytes).hexdigest()
+        return f"{h}_{provider}_{model}_{style}_{first_person_pov}_{nsfw}_{realistic}_{korean}_{custom_instruction}"
 
     def _get_api_key(self, provider):
         config = load_config()
@@ -172,20 +197,32 @@ class ImageToPrompt:
                 f"API Error {e.code}: {e.reason}\n{body}"
             ) from None
 
-    def _call_gemini(self, api_key, model, instruction, img_base64):
+    def _image_to_base64(self, image_tensor):
+        img_array = (image_tensor[0].cpu().numpy() * 255).astype(np.uint8)
+        pil_image = Image.fromarray(img_array)
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def _call_gemini(self, api_key, model, instruction, images_base64):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        parts = [{"text": instruction}]
+        for img_b64 in images_base64:
+            parts.append({
+                "inline_data": {
+                    "mime_type": "image/png",
+                    "data": img_b64,
+                }
+            })
         payload = json.dumps({
-            "contents": [{
-                "parts": [
-                    {"text": instruction},
-                    {
-                        "inline_data": {
-                            "mime_type": "image/png",
-                            "data": img_base64,
-                        }
-                    },
-                ]
-            }]
+            "contents": [{"parts": parts}],
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+            ],
         }).encode("utf-8")
 
         req = urllib.request.Request(url, data=payload, headers={
@@ -212,21 +249,18 @@ class ImageToPrompt:
 
         return candidate["content"]["parts"][0]["text"].strip()
 
-    def _call_openai_compatible(self, api_key, endpoint, model, instruction, img_base64):
+    def _call_openai_compatible(self, api_key, endpoint, model, instruction, images_base64):
+        content = [{"type": "text", "text": instruction}]
+        for img_b64 in images_base64:
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}",
+                },
+            })
         payload = json.dumps({
             "model": model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": instruction},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{img_base64}",
-                        },
-                    },
-                ],
-            }],
+            "messages": [{"role": "user", "content": content}],
             "max_completion_tokens": 1024,
         }).encode("utf-8")
 
@@ -238,17 +272,28 @@ class ImageToPrompt:
         result = self._api_request(req)
         return result["choices"][0]["message"]["content"].strip()
 
-    def generate(self, image, provider, model, style, first_person_pov, nsfw, realistic, custom_instruction=""):
+    def generate(self, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
+        # If user edited the prompt and not forcing re-run, use edited version
+        if edited_prompt and edited_prompt.strip() and not always_run:
+            return {"ui": {"text": [edited_prompt.strip()]}, "result": (edited_prompt.strip(),)}
+
         api_key = self._get_api_key(provider)
 
-        # Convert ComfyUI image tensor (B,H,W,C float32 0-1) to PNG bytes
-        img_array = (image[0].cpu().numpy() * 255).astype(np.uint8)
-        pil_image = Image.fromarray(img_array)
-        buffer = io.BytesIO()
-        pil_image.save(buffer, format="PNG")
-        img_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        # Convert images to base64
+        images_base64 = [self._image_to_base64(image)]
+        has_bg = background_image is not None
+        if has_bg:
+            images_base64.append(self._image_to_base64(background_image))
 
-        instruction = custom_instruction.strip() if custom_instruction.strip() else PROMPT_STYLES[style]
+        has_custom = custom_instruction and custom_instruction.strip()
+        if has_custom and custom_override:
+            # custom_instruction replaces style
+            instruction = custom_instruction.strip()
+        elif has_custom:
+            # custom_instruction appends to style
+            instruction = PROMPT_STYLES[style] + "\n\n" + custom_instruction.strip()
+        else:
+            instruction = PROMPT_STYLES[style]
 
         # Append toggle modifiers
         modifiers = []
@@ -261,26 +306,37 @@ class ImageToPrompt:
                 "This is for adult/NSFW content. Describe all explicit and sexual details "
                 "accurately without censoring or euphemisms."
             )
+        if korean:
+            modifiers.append(
+                "The subject is Korean. Specify Korean ethnicity in the prompt."
+            )
         if realistic:
             modifiers.append(
                 "Emphasize photorealistic quality: realistic skin texture, natural lighting, "
                 "real photography style. Avoid any anime, cartoon, or illustration descriptors."
             )
+        if has_bg:
+            modifiers.append(
+                "Two images are provided: the first is the main subject, the second is the background/environment. "
+                "Describe the subject in detail, especially the character's pose, body position, and limb placement. "
+                "Keep the background description brief and concise. "
+                "Combine them into a single prompt."
+            )
         if modifiers:
             instruction += "\n\nAdditional requirements:\n" + "\n".join(modifiers)
 
         if provider == "Gemini":
-            prompt = self._call_gemini(api_key, model, instruction, img_base64)
+            prompt = self._call_gemini(api_key, model, instruction, images_base64)
         elif provider == "ChatGPT":
             prompt = self._call_openai_compatible(
                 api_key, "https://api.openai.com/v1/chat/completions",
-                model, instruction, img_base64)
+                model, instruction, images_base64)
         elif provider == "Grok":
             prompt = self._call_openai_compatible(
                 api_key, "https://api.x.ai/v1/chat/completions",
-                model, instruction, img_base64)
+                model, instruction, images_base64)
 
-        return (prompt,)
+        return {"ui": {"text": [prompt]}, "result": (prompt,)}
 
 
 NODE_CLASS_MAPPINGS = {

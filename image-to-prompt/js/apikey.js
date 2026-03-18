@@ -69,19 +69,16 @@ app.registerExtension({
       );
     };
 
-    // Hook into node creation to set up provider change listener
-    const origOnNodeCreated = nodeType.prototype.onNodeCreated;
-    nodeType.prototype.onNodeCreated = function () {
-      if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
-
-      const node = this;
+    // Set up provider→model sync
+    function setupProviderSync(node) {
       const providerWidget = node.widgets?.find(
         (w) => w.name === "provider"
       );
-      if (!providerWidget) return;
+      if (!providerWidget || providerWidget._modelSyncSetup) return;
+      providerWidget._modelSyncSetup = true;
 
-      // Load models for initial provider
-      updateModelWidget(node, providerWidget.value);
+      // Sync model to current provider
+      updateModelWidget(node, providerWidget.value, true);
 
       // Watch for provider changes — always reset model on switch
       const origCallback = providerWidget.callback;
@@ -89,6 +86,45 @@ app.registerExtension({
         if (origCallback) origCallback.call(this, value);
         updateModelWidget(node, value, true);
       };
+    }
+
+    // New node creation
+    const origOnNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
+      setupProviderSync(this);
+    };
+
+    // Workflow load / existing node
+    const origOnConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (info) {
+      if (origOnConfigure) origOnConfigure.call(this, info);
+      setupProviderSync(this);
+    };
+
+    // After execution, populate edited_prompt widget with the result
+    const origOnExecuted = nodeType.prototype.onExecuted;
+    nodeType.prototype.onExecuted = function (data) {
+      if (origOnExecuted) origOnExecuted.call(this, data);
+
+      const text = data?.text?.[0];
+      if (!text) return;
+
+      const editWidget = this.widgets?.find(
+        (w) => w.name === "edited_prompt"
+      );
+      const alwaysRunWidget = this.widgets?.find(
+        (w) => w.name === "always_run"
+      );
+      const alwaysRun = alwaysRunWidget?.value === true;
+
+      if (editWidget) {
+        // Always update if always_run is on, or if empty
+        if (alwaysRun || !editWidget.value?.trim()) {
+          editWidget.value = text;
+          app.graph.setDirtyCanvas(true);
+        }
+      }
     };
   },
 });
