@@ -1,0 +1,189 @@
+import { app } from "../../scripts/app.js";
+
+const PROVIDERS = ["Gemini", "ChatGPT", "Grok"];
+const KEY_NAMES = {
+  Gemini: "gemini_api_key",
+  ChatGPT: "openai_api_key",
+  Grok: "grok_api_key",
+};
+
+// Cache fetched model lists per provider
+const modelCache = {};
+
+async function fetchModels(provider) {
+  if (modelCache[provider]) return modelCache[provider];
+  try {
+    const resp = await fetch(
+      `/image-to-prompt/models?provider=${encodeURIComponent(provider)}`
+    );
+    const data = await resp.json();
+    modelCache[provider] = data.models && data.models.length > 0 ? data.models : [];
+  } catch {
+    modelCache[provider] = [];
+  }
+  return modelCache[provider];
+}
+
+function updateModelWidget(node, provider, forceReset = false) {
+  const modelWidget = node.widgets?.find((w) => w.name === "model");
+  if (!modelWidget) return;
+
+  fetchModels(provider).then((models) => {
+    modelWidget.options.values = models;
+    if (forceReset || !models.includes(modelWidget.value)) {
+      modelWidget.value = models[0] || "";
+    }
+    app.graph.setDirtyCanvas(true);
+  });
+}
+
+app.registerExtension({
+  name: "imageToPrompt.apiKeyManager",
+
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData.name !== "ImageToPrompt") return;
+
+    const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
+    nodeType.prototype.getExtraMenuOptions = function (_, options) {
+      if (origGetExtraMenuOptions) {
+        origGetExtraMenuOptions.apply(this, arguments);
+      }
+
+      options.unshift(
+        {
+          content: "🔑 API Key 설정",
+          callback: () => showApiKeyDialog(),
+        },
+        {
+          content: "🔄 모델 목록 새로고침",
+          callback: () => {
+            const providerWidget = this.widgets?.find(
+              (w) => w.name === "provider"
+            );
+            if (providerWidget) {
+              delete modelCache[providerWidget.value];
+              updateModelWidget(this, providerWidget.value);
+            }
+          },
+        }
+      );
+    };
+
+    // Hook into node creation to set up provider change listener
+    const origOnNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
+
+      const node = this;
+      const providerWidget = node.widgets?.find(
+        (w) => w.name === "provider"
+      );
+      if (!providerWidget) return;
+
+      // Load models for initial provider
+      updateModelWidget(node, providerWidget.value);
+
+      // Watch for provider changes — always reset model on switch
+      const origCallback = providerWidget.callback;
+      providerWidget.callback = function (value) {
+        if (origCallback) origCallback.call(this, value);
+        updateModelWidget(node, value, true);
+      };
+    };
+  },
+});
+
+// ── API Key Dialog ────────────────────────────────────────────────
+
+async function loadKeys() {
+  try {
+    const resp = await fetch("/image-to-prompt/api-keys");
+    return await resp.json();
+  } catch {
+    return {};
+  }
+}
+
+async function saveKeys(keys) {
+  await fetch("/image-to-prompt/api-keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(keys),
+  });
+}
+
+function showApiKeyDialog() {
+  loadKeys().then((keys) => {
+    const dialog = document.createElement("dialog");
+    dialog.style.cssText =
+      "padding:20px;border-radius:8px;border:1px solid #555;background:#2a2a2a;color:#ddd;min-width:420px;font-family:sans-serif;";
+
+    const title = document.createElement("h3");
+    title.textContent = "API Key 설정";
+    title.style.cssText = "margin:0 0 16px 0;font-size:16px;";
+    dialog.appendChild(title);
+
+    const inputs = {};
+
+    for (const provider of PROVIDERS) {
+      const configKey = KEY_NAMES[provider];
+      const saved = keys[configKey] || "";
+
+      const row = document.createElement("div");
+      row.style.cssText = "margin-bottom:12px;";
+
+      const label = document.createElement("label");
+      label.textContent = provider;
+      label.style.cssText =
+        "display:block;margin-bottom:4px;font-weight:bold;font-size:13px;";
+
+      const input = document.createElement("input");
+      input.type = "text";
+      input.value = saved;
+      input.placeholder = `${provider} API Key`;
+      input.style.cssText =
+        "width:100%;padding:6px 8px;border-radius:4px;border:1px solid #555;background:#1a1a1a;color:#ddd;font-size:13px;box-sizing:border-box;";
+
+      inputs[configKey] = input;
+      row.appendChild(label);
+      row.appendChild(input);
+      dialog.appendChild(row);
+    }
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText =
+      "display:flex;justify-content:flex-end;gap:8px;margin-top:16px;";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "취소";
+    cancelBtn.style.cssText =
+      "padding:6px 16px;border-radius:4px;border:1px solid #555;background:#3a3a3a;color:#ddd;cursor:pointer;";
+    cancelBtn.onclick = () => {
+      dialog.close();
+      dialog.remove();
+    };
+
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "저장";
+    saveBtn.style.cssText =
+      "padding:6px 16px;border-radius:4px;border:none;background:#4a9eff;color:#fff;cursor:pointer;font-weight:bold;";
+    saveBtn.onclick = async () => {
+      const newKeys = {};
+      for (const [key, input] of Object.entries(inputs)) {
+        newKeys[key] = input.value.trim();
+      }
+      await saveKeys(newKeys);
+      // Clear model cache so new keys trigger fresh model fetch
+      for (const p of PROVIDERS) delete modelCache[p];
+      dialog.close();
+      dialog.remove();
+    };
+
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(saveBtn);
+    dialog.appendChild(btnRow);
+
+    document.body.appendChild(dialog);
+    dialog.showModal();
+  });
+}
