@@ -135,6 +135,7 @@ class ImageToPrompt:
                 "korean": ("BOOLEAN", {"default": False}),
                 "always_run": ("BOOLEAN", {"default": False}),
                 "custom_override": ("BOOLEAN", {"default": True}),
+                "structured_order": ("BOOLEAN", {"default": False}),
             },
             "optional": {
                 "background_image": ("IMAGE",),
@@ -161,7 +162,7 @@ class ImageToPrompt:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
+    def IS_CHANGED(cls, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
         if always_run:
             return float("NaN")
         import hashlib
@@ -170,7 +171,7 @@ class ImageToPrompt:
         if background_image is not None:
             bg_bytes = background_image.cpu().numpy().tobytes()
             h += "_bg_" + hashlib.md5(bg_bytes).hexdigest()
-        return f"{h}_{provider}_{model}_{style}_{first_person_pov}_{nsfw}_{realistic}_{korean}_{custom_instruction}"
+        return f"{h}_{provider}_{model}_{style}_{first_person_pov}_{nsfw}_{realistic}_{korean}_{structured_order}_{custom_instruction}"
 
     def _get_api_key(self, provider):
         config = load_config()
@@ -272,7 +273,7 @@ class ImageToPrompt:
         result = self._api_request(req)
         return result["choices"][0]["message"]["content"].strip()
 
-    def generate(self, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
+    def generate(self, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
         # If user edited the prompt and not forcing re-run, use edited version
         if edited_prompt and edited_prompt.strip() and not always_run:
             return {"ui": {"text": [edited_prompt.strip()]}, "result": (edited_prompt.strip(),)}
@@ -312,15 +313,27 @@ class ImageToPrompt:
             )
         if realistic:
             modifiers.append(
-                "Emphasize photorealistic quality: realistic skin texture, natural lighting, "
-                "real photography style. Avoid any anime, cartoon, or illustration descriptors."
+                "Include the word 'realistic' in the prompt. Do not use words like illustration, 2D, anime, cartoon, or drawing."
             )
         if has_bg:
             modifiers.append(
                 "Two images are provided: the first is the main subject, the second is the background/environment. "
                 "Describe the subject in detail, especially the character's pose, body position, and limb placement. "
-                "Keep the background description brief and concise. "
+                "Keep the background description brief. "
                 "Combine them into a single prompt."
+            )
+        if structured_order:
+            modifiers.append(
+                "Structure the prompt in this exact order: "
+                "1) Camera angle and composition, "
+                "2) Character appearance (face, hair, body), "
+                "3) Clothing and accessories, "
+                "4) Subject's action, pose, and body position, "
+                + ("5) Viewer's hands and arm actions only; briefly describe any other visible body parts, "
+                   "6) Background and environment (keep this brief). "
+                   if first_person_pov else
+                   "5) Background and environment (keep this brief). ")
+                + "Separate each section with a newline. Do not number them."
             )
         if modifiers:
             instruction += "\n\nAdditional requirements:\n" + "\n".join(modifiers)

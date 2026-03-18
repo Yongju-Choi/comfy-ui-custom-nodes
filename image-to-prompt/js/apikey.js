@@ -74,18 +74,20 @@ app.registerExtension({
       const providerWidget = node.widgets?.find(
         (w) => w.name === "provider"
       );
-      if (!providerWidget || providerWidget._modelSyncSetup) return;
-      providerWidget._modelSyncSetup = true;
+      if (!providerWidget) return;
 
-      // Sync model to current provider
+      // Always sync model list to current provider
       updateModelWidget(node, providerWidget.value, true);
 
-      // Watch for provider changes — always reset model on switch
-      const origCallback = providerWidget.callback;
-      providerWidget.callback = function (value) {
-        if (origCallback) origCallback.call(this, value);
-        updateModelWidget(node, value, true);
-      };
+      // Only attach callback once
+      if (!providerWidget._modelSyncSetup) {
+        providerWidget._modelSyncSetup = true;
+        const origCallback = providerWidget.callback;
+        providerWidget.callback = function (value) {
+          if (origCallback) origCallback.call(this, value);
+          updateModelWidget(node, value, true);
+        };
+      }
     }
 
     // New node creation
@@ -95,11 +97,12 @@ app.registerExtension({
       setupProviderSync(this);
     };
 
-    // Workflow load / existing node
+    // Workflow load / existing node — delay to ensure widgets are loaded
     const origOnConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function (info) {
       if (origOnConfigure) origOnConfigure.call(this, info);
-      setupProviderSync(this);
+      const self = this;
+      setTimeout(() => setupProviderSync(self), 100);
     };
 
     // After execution, populate edited_prompt widget with the result
