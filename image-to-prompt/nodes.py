@@ -95,7 +95,8 @@ _OUTPUT_RULE = (
     "\n\nIMPORTANT: Output ONLY the prompt itself. "
     "No titles, labels, headers, explanations, recommendations, questions, or any other text. "
     "Do not wrap in quotes. Do not add 'Positive Prompt:', 'Negative Prompt:', or similar prefixes. "
-    "Just the raw prompt text, nothing else."
+    "Just the raw prompt text, nothing else. "
+    "Write only in positive/affirmative terms. Do not use negative phrases like 'no', 'not', 'without', 'avoid', or 'lack of'."
 )
 
 PROMPT_STYLES = {
