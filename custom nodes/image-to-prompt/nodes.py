@@ -121,6 +121,16 @@ PROMPT_STYLES = {
 }
 
 class ImageToPrompt:
+    _last_signatures = {}  # {unique_id: signature}
+
+    def _compute_signature(self, image, provider, model, style, first_person_pov, nsfw, realistic, korean, structured_order, custom_override, custom_instruction, background_image):
+        import hashlib
+        img_hash = hashlib.md5(image.cpu().numpy().tobytes()).hexdigest()
+        parts = [img_hash, provider, model, style, str(first_person_pov), str(nsfw), str(realistic), str(korean), str(structured_order), str(custom_override), custom_instruction or ""]
+        if background_image is not None:
+            parts.append(hashlib.md5(background_image.cpu().numpy().tobytes()).hexdigest())
+        return hashlib.md5("|".join(parts).encode()).hexdigest()
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -266,8 +276,13 @@ class ImageToPrompt:
         return result["choices"][0]["message"]["content"].strip()
 
     def generate(self, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
-        # If user edited the prompt and not forcing re-run, use edited version
-        if edited_prompt and edited_prompt.strip() and not always_run:
+        # Compute signature of generation conditions
+        sig = self._compute_signature(image, provider, model, style, first_person_pov, nsfw, realistic, korean, structured_order, custom_override, custom_instruction, background_image)
+        prev_sig = ImageToPrompt._last_signatures.get(unique_id)
+        conditions_changed = (prev_sig is not None and sig != prev_sig)
+
+        # If user edited the prompt and not forcing re-run and conditions unchanged, use edited version
+        if edited_prompt and edited_prompt.strip() and not always_run and not conditions_changed:
             return {"ui": {"text": [edited_prompt.strip()]}, "result": (edited_prompt.strip(),)}
 
         api_key = self._get_api_key(provider)
@@ -328,7 +343,8 @@ class ImageToPrompt:
             else:
                 sections.append("5) Background and environment (keep this brief)")
             modifiers.append(
-                "Structure the prompt in this exact order, numbering each section exactly as shown: "
+                "Structure the prompt in this exact order, using only the section numbers (1), 2), etc.) as separators. "
+                "Do not include section titles or headers after the numbers: "
                 + ", ".join(sections) + "."
             )
         if modifiers:
@@ -350,8 +366,10 @@ class ImageToPrompt:
         if structured_order:
             import re
             prompt = re.sub(r'\s*\|{2,}\s*', '\n', prompt)
-            prompt = re.sub(r'(\d\))\s*[^,\n]*,\s*', r'\n\1 ', prompt)
             prompt = prompt.strip()
+
+        # Save signature after successful API call
+        ImageToPrompt._last_signatures[unique_id] = sig
 
         return {"ui": {"text": [prompt]}, "result": (prompt,)}
 

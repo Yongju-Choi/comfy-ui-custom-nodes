@@ -7,6 +7,12 @@ const KEY_NAMES = {
   Grok: "grok_api_key",
 };
 
+// Generation parameters that affect output — changing any should clear edited_prompt
+const GENERATION_PARAMS = [
+  "provider", "model", "style", "first_person_pov",
+  "nsfw", "realistic", "korean", "structured_order", "custom_override",
+];
+
 // Cache fetched model lists per provider
 const modelCache = {};
 
@@ -69,6 +75,25 @@ app.registerExtension({
       );
     };
 
+    // Clear edited_prompt when generation parameters change
+    function setupAutoReset(node) {
+      const editWidget = node.widgets?.find((w) => w.name === "edited_prompt");
+      if (!editWidget) return;
+
+      for (const name of GENERATION_PARAMS) {
+        const w = node.widgets?.find((x) => x.name === name);
+        if (!w || w._autoResetSetup) continue;
+        w._autoResetSetup = true;
+        const orig = w.callback;
+        w.callback = function (value) {
+          if (orig) orig.call(this, value);
+          editWidget.value = "";
+          app.graph.setDirtyCanvas(true);
+          console.log(`[image-to-prompt] edited_prompt cleared (${name} changed)`);
+        };
+      }
+    }
+
     // Set up provider→model sync
     function setupProviderSync(node) {
       const providerWidget = node.widgets?.find(
@@ -90,11 +115,29 @@ app.registerExtension({
       }
     }
 
+    // Clear edited_prompt when image inputs are connected/disconnected
+    const origOnConnectionsChange = nodeType.prototype.onConnectionsChange;
+    nodeType.prototype.onConnectionsChange = function (side, slot, connected, link_info, output) {
+      if (origOnConnectionsChange) origOnConnectionsChange.apply(this, arguments);
+      if (side === 1) {  // input side
+        const inputName = this.inputs?.[slot]?.name;
+        if (inputName === "image" || inputName === "background_image") {
+          const editWidget = this.widgets?.find((w) => w.name === "edited_prompt");
+          if (editWidget) {
+            editWidget.value = "";
+            app.graph.setDirtyCanvas(true);
+            console.log(`[image-to-prompt] edited_prompt cleared (${inputName} ${connected ? "connected" : "disconnected"})`);
+          }
+        }
+      }
+    };
+
     // New node creation
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
       setupProviderSync(this);
+      setupAutoReset(this);
     };
 
     // Workflow load / existing node — delay to ensure widgets are loaded
@@ -102,7 +145,10 @@ app.registerExtension({
     nodeType.prototype.onConfigure = function (info) {
       if (origOnConfigure) origOnConfigure.call(this, info);
       const self = this;
-      setTimeout(() => setupProviderSync(self), 100);
+      setTimeout(() => {
+        setupProviderSync(self);
+        setupAutoReset(self);
+      }, 100);
     };
 
     // After execution, populate edited_prompt widget with the result
