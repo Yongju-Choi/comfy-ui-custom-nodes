@@ -1,7 +1,10 @@
+import collections
+import hashlib
 import json
 import os
 import base64
 import io
+import re
 import urllib.request
 import urllib.error
 import numpy as np
@@ -121,14 +124,22 @@ PROMPT_STYLES = {
 }
 
 class ImageToPrompt:
-    _last_signatures = {}  # {unique_id: signature}
+    _last_signatures = collections.OrderedDict()  # {unique_id: signature}, max 100
+    _MAX_SIGNATURES = 100
+
+    @staticmethod
+    def _image_fingerprint(image_tensor):
+        """Lightweight hash: shape + dtype + evenly-sampled bytes."""
+        t = image_tensor.cpu().numpy()
+        flat = t.ravel()
+        step = max(1, len(flat) // 1024)
+        return hashlib.md5(flat[::step].tobytes()).hexdigest()
 
     def _compute_signature(self, image, provider, model, style, first_person_pov, nsfw, realistic, korean, structured_order, custom_override, custom_instruction, background_image):
-        import hashlib
-        img_hash = hashlib.md5(image.cpu().numpy().tobytes()).hexdigest()
+        img_hash = self._image_fingerprint(image)
         parts = [img_hash, provider, model, style, str(first_person_pov), str(nsfw), str(realistic), str(korean), str(structured_order), str(custom_override), custom_instruction or ""]
         if background_image is not None:
-            parts.append(hashlib.md5(background_image.cpu().numpy().tobytes()).hexdigest())
+            parts.append(self._image_fingerprint(background_image))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
 
     @classmethod
@@ -186,6 +197,11 @@ class ImageToPrompt:
             )
         return api_key
 
+    @staticmethod
+    def _mask_url(url):
+        """Remove API key query parameters from URLs for safe logging."""
+        return re.sub(r'([?&])key=[^&]+', r'\1key=***', url)
+
     def _api_request(self, req):
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
@@ -196,8 +212,9 @@ class ImageToPrompt:
                 body = e.read().decode("utf-8", errors="replace")
             except Exception:
                 pass
+            safe_url = self._mask_url(req.full_url)
             raise RuntimeError(
-                f"API Error {e.code}: {e.reason}\n{body}"
+                f"API Error {e.code} ({safe_url}): {e.reason}\n{body}"
             ) from None
 
     def _image_to_base64(self, image_tensor):
@@ -364,12 +381,16 @@ class ImageToPrompt:
             raise ValueError(f"Unknown provider: {provider}")
 
         if structured_order:
-            import re
             prompt = re.sub(r'\s*\|{2,}\s*', '\n', prompt)
             prompt = prompt.strip()
 
-        # Save signature after successful API call
-        ImageToPrompt._last_signatures[unique_id] = sig
+        # Save signature after successful API call (with size limit)
+        sigs = ImageToPrompt._last_signatures
+        if unique_id in sigs:
+            sigs.move_to_end(unique_id)
+        sigs[unique_id] = sig
+        while len(sigs) > ImageToPrompt._MAX_SIGNATURES:
+            sigs.popitem(last=False)
 
         return {"ui": {"text": [prompt]}, "result": (prompt,)}
 

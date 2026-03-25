@@ -92,6 +92,23 @@ app.registerExtension({
           console.log(`[image-to-prompt] edited_prompt cleared (${name} changed)`);
         };
       }
+
+      // custom_instruction: detect changes on focus-out (callback fires on every keystroke)
+      const ciWidget = node.widgets?.find((w) => w.name === "custom_instruction");
+      if (ciWidget && !ciWidget._autoResetSetup) {
+        ciWidget._autoResetSetup = true;
+        let lastValue = ciWidget.value;
+        const origCb = ciWidget.callback;
+        ciWidget.callback = function (value) {
+          if (origCb) origCb.call(this, value);
+          if (value !== lastValue) {
+            lastValue = value;
+            editWidget.value = "";
+            app.graph.setDirtyCanvas(true);
+            console.log("[image-to-prompt] edited_prompt cleared (custom_instruction changed)");
+          }
+        };
+      }
     }
 
     // Set up provider→model sync
