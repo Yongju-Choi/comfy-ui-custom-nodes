@@ -128,6 +128,7 @@ app.registerExtension({
           app.graph.setDirtyCanvas(true);
         }
       }
+
     };
   },
 });

@@ -96,7 +96,6 @@ _OUTPUT_RULE = (
     "No titles, labels, headers, explanations, recommendations, questions, or any other text. "
     "Do not wrap in quotes. Do not add 'Positive Prompt:', 'Negative Prompt:', or similar prefixes. "
     "Just the raw prompt text, nothing else. "
-    "Write only in positive/affirmative terms. Do not use negative phrases like 'no', 'not', 'without', 'avoid', or 'lack of'."
 )
 
 PROMPT_STYLES = {
@@ -263,7 +262,7 @@ class ImageToPrompt:
         payload = json.dumps({
             "model": model,
             "messages": [{"role": "user", "content": content}],
-            "max_completion_tokens": 1024,
+            "max_completion_tokens": 4096,
         }).encode("utf-8")
 
         req = urllib.request.Request(endpoint, data=payload, headers={
@@ -301,7 +300,8 @@ class ImageToPrompt:
         modifiers = []
         if first_person_pov:
             modifiers.append(
-                "Write the prompt from a first-person POV perspective."
+                "Write the prompt from a first-person POV perspective. "
+                "Refer to the viewer as 'the male viewer' instead of I, my, or me."
             )
         if nsfw:
             modifiers.append(
@@ -324,17 +324,21 @@ class ImageToPrompt:
                 "Combine them into a single prompt."
             )
         if structured_order:
+            sections = [
+                "1) Camera angle and composition",
+                "2) Character appearance (face, hair, body)",
+                "3) Clothing and accessories",
+                "4) Subject's action, pose, and body position",
+            ]
+            if first_person_pov:
+                sections.append("5) Viewer's hands and arm actions only; briefly describe any other visible body parts")
+                sections.append("6) Background and environment (keep this brief)")
+            else:
+                sections.append("5) Background and environment (keep this brief)")
             modifiers.append(
                 "Structure the prompt in this exact order: "
-                "1) Camera angle and composition, "
-                "2) Character appearance (face, hair, body), "
-                "3) Clothing and accessories, "
-                "4) Subject's action, pose, and body position, "
-                + ("5) Viewer's hands and arm actions only; briefly describe any other visible body parts, "
-                   "6) Background and environment (keep this brief). "
-                   if first_person_pov else
-                   "5) Background and environment (keep this brief). ")
-                + "Separate each section with a newline. Do not number them."
+                + ", ".join(sections) + ". "
+                + "End each section with a period followed by || as separator. Do not number them."
             )
         if modifiers:
             instruction += "\n\nAdditional requirements:\n" + "\n".join(modifiers)
@@ -349,6 +353,11 @@ class ImageToPrompt:
             prompt = self._call_openai_compatible(
                 api_key, "https://api.x.ai/v1/chat/completions",
                 model, instruction, images_base64)
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
+
+        if structured_order:
+            prompt = prompt.replace("||", "\n")
 
         return {"ui": {"text": [prompt]}, "result": (prompt,)}
 
