@@ -31,15 +31,15 @@ def save_config(config):
 # ── Curated vision-capable models per provider ────────────────────
 
 PROVIDER_MODELS = {
-    "Gemini": [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.5-flash-lite",
-    ],
     "ChatGPT": [
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.4-nano",
+    ],
+    "Gemini": [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
     ],
     "Grok": [
         "grok-4.20-beta-0309-non-reasoning",
@@ -126,16 +126,16 @@ class ImageToPrompt:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "provider": (["Gemini", "ChatGPT", "Grok"],),
+                "provider": (["ChatGPT", "Gemini", "Grok"],),
                 "model": (ALL_MODELS,),
                 "style": (list(PROMPT_STYLES.keys()),),
-                "first_person_pov": ("BOOLEAN", {"default": False}),
-                "nsfw": ("BOOLEAN", {"default": False}),
-                "realistic": ("BOOLEAN", {"default": False}),
-                "korean": ("BOOLEAN", {"default": False}),
+                "first_person_pov": ("BOOLEAN", {"default": True}),
+                "nsfw": ("BOOLEAN", {"default": True}),
+                "realistic": ("BOOLEAN", {"default": True}),
+                "korean": ("BOOLEAN", {"default": True}),
                 "always_run": ("BOOLEAN", {"default": False}),
-                "custom_override": ("BOOLEAN", {"default": True}),
-                "structured_order": ("BOOLEAN", {"default": False}),
+                "custom_override": ("BOOLEAN", {"default": False}),
+                "structured_order": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "background_image": ("IMAGE",),
@@ -163,15 +163,7 @@ class ImageToPrompt:
 
     @classmethod
     def IS_CHANGED(cls, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
-        if always_run:
-            return float("NaN")
-        import hashlib
-        img_bytes = image.cpu().numpy().tobytes()
-        h = hashlib.md5(img_bytes).hexdigest()
-        if background_image is not None:
-            bg_bytes = background_image.cpu().numpy().tobytes()
-            h += "_bg_" + hashlib.md5(bg_bytes).hexdigest()
-        return f"{h}_{provider}_{model}_{style}_{first_person_pov}_{nsfw}_{realistic}_{korean}_{structured_order}_{custom_instruction}"
+        return float("NaN")
 
     def _get_api_key(self, provider):
         config = load_config()
@@ -336,9 +328,8 @@ class ImageToPrompt:
             else:
                 sections.append("5) Background and environment (keep this brief)")
             modifiers.append(
-                "Structure the prompt in this exact order: "
-                + ", ".join(sections) + ". "
-                + "End each section with a period followed by || as separator. Do not number them."
+                "Structure the prompt in this exact order, numbering each section exactly as shown: "
+                + ", ".join(sections) + "."
             )
         if modifiers:
             instruction += "\n\nAdditional requirements:\n" + "\n".join(modifiers)
@@ -357,7 +348,10 @@ class ImageToPrompt:
             raise ValueError(f"Unknown provider: {provider}")
 
         if structured_order:
-            prompt = prompt.replace("||", "\n")
+            import re
+            prompt = re.sub(r'\s*\|{2,}\s*', '\n', prompt)
+            prompt = re.sub(r'(\d\))\s*[^,\n]*,\s*', r'\n\1 ', prompt)
+            prompt = prompt.strip()
 
         return {"ui": {"text": [prompt]}, "result": (prompt,)}
 
