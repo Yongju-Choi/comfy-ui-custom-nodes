@@ -130,13 +130,13 @@ class ImageToPrompt:
                 "image": ("IMAGE",),
                 "provider": (["ChatGPT", "Gemini", "Grok"],),
                 "model": (ALL_MODELS,),
+                "run": ("BOOLEAN", {"default": False}),
                 "style": (list(PROMPT_STYLES.keys()),),
                 "first_person_pov": ("BOOLEAN", {"default": True}),
                 "viewer_gender": (["male", "female"], {"default": "male"}),
                 "nsfw": ("BOOLEAN", {"default": True}),
                 "realistic": ("BOOLEAN", {"default": True}),
                 "korean": ("BOOLEAN", {"default": True}),
-                "run": ("BOOLEAN", {"default": False}),
                 "custom_override": ("BOOLEAN", {"default": False}),
                 "structured_order": ("BOOLEAN", {"default": True}),
             },
@@ -165,7 +165,7 @@ class ImageToPrompt:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, image, provider, model, style, first_person_pov, viewer_gender="male", nsfw=True, realistic=True, korean=True, run=False, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
+    def IS_CHANGED(cls, image, provider, model, run=False, style="detailed", first_person_pov=True, viewer_gender="male", nsfw=True, realistic=True, korean=True, custom_override=False, structured_order=True, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
         return float("NaN")
 
     def _get_api_key(self, provider):
@@ -274,7 +274,7 @@ class ImageToPrompt:
         result = self._api_request(req)
         return result["choices"][0]["message"]["content"].strip()
 
-    def generate(self, image, provider, model, style, first_person_pov, viewer_gender="male", nsfw=True, realistic=True, korean=True, run=False, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
+    def generate(self, image, provider, model, run=False, style="detailed", first_person_pov=True, viewer_gender="male", nsfw=True, realistic=True, korean=True, custom_override=False, structured_order=True, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
         # run OFF → return edited_prompt as-is (or empty)
         if not run:
             result = edited_prompt.strip() if edited_prompt else ""
