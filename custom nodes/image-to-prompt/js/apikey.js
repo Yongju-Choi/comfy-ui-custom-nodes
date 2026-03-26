@@ -9,7 +9,7 @@ const KEY_NAMES = {
 
 // Generation parameters that affect output — changing any should clear edited_prompt
 const GENERATION_PARAMS = [
-  "provider", "model", "style", "first_person_pov",
+  "provider", "model", "style", "first_person_pov", "viewer_gender",
   "nsfw", "realistic", "korean", "structured_order", "custom_override",
 ];
 
@@ -179,14 +179,14 @@ app.registerExtension({
       const editWidget = this.widgets?.find(
         (w) => w.name === "edited_prompt"
       );
-      const alwaysRunWidget = this.widgets?.find(
-        (w) => w.name === "always_run"
+      const runWidget = this.widgets?.find(
+        (w) => w.name === "run"
       );
-      const alwaysRun = alwaysRunWidget?.value === true;
+      const runActive = runWidget?.value === true;
 
       if (editWidget) {
-        // Always update if always_run is on, or if empty
-        if (alwaysRun || !editWidget.value?.trim()) {
+        // Always update if run is on, or if empty
+        if (runActive || !editWidget.value?.trim()) {
           editWidget.value = text;
           app.graph.setDirtyCanvas(true);
         }

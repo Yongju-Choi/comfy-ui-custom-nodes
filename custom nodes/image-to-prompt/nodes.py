@@ -1,5 +1,3 @@
-import collections
-import hashlib
 import json
 import os
 import base64
@@ -124,23 +122,6 @@ PROMPT_STYLES = {
 }
 
 class ImageToPrompt:
-    _last_signatures = collections.OrderedDict()  # {unique_id: signature}, max 100
-    _MAX_SIGNATURES = 100
-
-    @staticmethod
-    def _image_fingerprint(image_tensor):
-        """Lightweight hash: shape + dtype + evenly-sampled bytes."""
-        t = image_tensor.cpu().numpy()
-        flat = t.ravel()
-        step = max(1, len(flat) // 1024)
-        return hashlib.md5(flat[::step].tobytes()).hexdigest()
-
-    def _compute_signature(self, image, provider, model, style, first_person_pov, nsfw, realistic, korean, structured_order, custom_override, custom_instruction, background_image):
-        img_hash = self._image_fingerprint(image)
-        parts = [img_hash, provider, model, style, str(first_person_pov), str(nsfw), str(realistic), str(korean), str(structured_order), str(custom_override), custom_instruction or ""]
-        if background_image is not None:
-            parts.append(self._image_fingerprint(background_image))
-        return hashlib.md5("|".join(parts).encode()).hexdigest()
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -151,10 +132,11 @@ class ImageToPrompt:
                 "model": (ALL_MODELS,),
                 "style": (list(PROMPT_STYLES.keys()),),
                 "first_person_pov": ("BOOLEAN", {"default": True}),
+                "viewer_gender": (["male", "female"], {"default": "male"}),
                 "nsfw": ("BOOLEAN", {"default": True}),
                 "realistic": ("BOOLEAN", {"default": True}),
                 "korean": ("BOOLEAN", {"default": True}),
-                "always_run": ("BOOLEAN", {"default": False}),
+                "run": ("BOOLEAN", {"default": False}),
                 "custom_override": ("BOOLEAN", {"default": False}),
                 "structured_order": ("BOOLEAN", {"default": True}),
             },
@@ -183,7 +165,7 @@ class ImageToPrompt:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
+    def IS_CHANGED(cls, image, provider, model, style, first_person_pov, viewer_gender="male", nsfw=True, realistic=True, korean=True, run=False, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
         return float("NaN")
 
     def _get_api_key(self, provider):
@@ -292,15 +274,11 @@ class ImageToPrompt:
         result = self._api_request(req)
         return result["choices"][0]["message"]["content"].strip()
 
-    def generate(self, image, provider, model, style, first_person_pov, nsfw, realistic, korean, always_run, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
-        # Compute signature of generation conditions
-        sig = self._compute_signature(image, provider, model, style, first_person_pov, nsfw, realistic, korean, structured_order, custom_override, custom_instruction, background_image)
-        prev_sig = ImageToPrompt._last_signatures.get(unique_id)
-        conditions_changed = (prev_sig is not None and sig != prev_sig)
-
-        # If user edited the prompt and not forcing re-run and conditions unchanged, use edited version
-        if edited_prompt and edited_prompt.strip() and not always_run and not conditions_changed:
-            return {"ui": {"text": [edited_prompt.strip()]}, "result": (edited_prompt.strip(),)}
+    def generate(self, image, provider, model, style, first_person_pov, viewer_gender="male", nsfw=True, realistic=True, korean=True, run=False, custom_override=True, structured_order=False, background_image=None, custom_instruction="", edited_prompt="", unique_id=None):
+        # run OFF → return edited_prompt as-is (or empty)
+        if not run:
+            result = edited_prompt.strip() if edited_prompt else ""
+            return {"ui": {"text": [result]}, "result": (result,)}
 
         api_key = self._get_api_key(provider)
 
@@ -325,7 +303,7 @@ class ImageToPrompt:
         if first_person_pov:
             modifiers.append(
                 "Write the prompt from a first-person POV perspective. "
-                "Refer to the viewer as 'the male viewer' instead of I, my, or me."
+                f"Refer to the viewer as 'the {viewer_gender} viewer' instead of I, my, or me."
             )
         if nsfw:
             modifiers.append(
@@ -383,14 +361,6 @@ class ImageToPrompt:
         if structured_order:
             prompt = re.sub(r'\s*\|{2,}\s*', '\n', prompt)
             prompt = prompt.strip()
-
-        # Save signature after successful API call (with size limit)
-        sigs = ImageToPrompt._last_signatures
-        if unique_id in sigs:
-            sigs.move_to_end(unique_id)
-        sigs[unique_id] = sig
-        while len(sigs) > ImageToPrompt._MAX_SIGNATURES:
-            sigs.popitem(last=False)
 
         return {"ui": {"text": [prompt]}, "result": (prompt,)}
 
